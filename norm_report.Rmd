@@ -1,0 +1,123 @@
+---
+title: "Olink Reference Normalization"
+output: html_document
+
+params:
+  rp_upload_data: NA
+  rp_bridging_str: NA
+  rp_norm_method: NA
+  rp_combined_data: NA
+  rp_combined_meta: NA
+---
+
+```{r eval = FALSE, echo = FALSE}
+# For PDF output, change the header to have "output: pdf_document".
+#
+# Note that due to an issue in rmarkdown, the default value of a parameter in
+# the header cannot be `NULL`, so I used a default of `NA` for the default value
+# of `n`.
+library(dplyr)
+library(DT)
+```
+
+
+## Summary of plate level information.
+
+
+```{r, echo=F, message=F, warning=F}
+DT::datatable(
+      data.frame(software_version = sapply(params$rp_upload_data, function(x) x@metadata$software_version) %>% unlist(),
+                 filename = sapply(params$rp_upload_data, function(x) x$file_name[1]) %>% unlist(),
+                 panel = sapply(params$rp_upload_data, function(x) x@metadata$panel)%>% unlist(),
+                 total_samples = sapply(params$rp_upload_data, function(x) ncol(x)) %>% unlist(),
+                 total_analyte = sapply(params$rp_upload_data, function(x) nrow(x)) %>% unlist()),
+      rownames = NULL,
+      options = list(scrollX = TRUE))
+```
+ 
+### Reference sample identifier: `r paste(strsplit(params$rp_bridging_str, split = ","), collapse = ",")`    
+
+```{r, echo=F, message=F, warning=F}
+# needs sample_id, Plate.ID, in metafile and "lot" only appear once in column names
+
+lapply(strsplit(params$rp_bridging_str, split = ",")%>%unlist(), function(x){
+      bdg_ls <- pull_bdg(params$rp_upload_data, pattern = x)
+      data.frame(filename = names(bdg_ls),
+                 identifier = x,
+                 total_samples = sapply(bdg_ls, function(x) ncol(x)) %>% unlist(),
+                 total_analyte = sapply(bdg_ls, function(x) paste(x$Assay, collapse = ",")) %>% unlist())
+    })%>%
+      do.call(what = "rbind")%>%
+      DT::datatable(rownames = NULL,
+      options = list(scrollX = TRUE))
+
+```
+
+### Normalization Method:
+The plate-to-plate variation was adjusted based on adjust-factor(plate specific) which makes equal NPX value among reference samples identified above.    
+
+Between Plate Normalization Method: **`r paste(params$rp_norm_method)`**    
+
+
+### PCA Before Normalization 
+
+```{r, echo=F, out.width= "100%", message=F, warning=F}
+mat <- params$rp_combined_data[ ,!grepl("(^NC|^IPC|randox)", ignore.case = T, params$rp_combined_data$Assay)]
+ref_id <- strsplit(params$rp_bridging_str, split = ",")%>%unlist()
+
+fit <- prcomp(impute::impute.knn(t(mat@assays@data$npx))$data)
+idf <- paste(ref_id, collapse = "|")
+idf <- paste0("(", idf, ")")
+
+temp <- data.frame(pc_1 = fit$x[ ,1], #fit$layout[ ,1],
+           pc_2 = fit$x[ ,2],#fit$layout[ ,2],
+           sample_id = mat$Assay,
+           type = ifelse(grepl(idf, ignore.case = T, mat$Assay), "Ref", "Study_Sample"),
+           Plate.ID = trim_string_bycommon(mat$Plate.ID, split = "_"))
+  
+temp %>%
+  ggplot()+
+  geom_point(aes(pc_1, pc_2, color = Plate.ID, shape = type))+
+  geom_line(data = temp%>%
+              filter(sample_id %in% ref_id),
+            aes(pc_1, pc_2, group = sample_id), linetype = 2, alpha = 0.6)+
+  facet_wrap(~type)+
+  theme_bw()+
+  theme(legend.position="bottom", legend.box="vertical", legend.margin=margin())
+```
+
+### PCA After Normalization 
+
+```{r, echo=F, out.width= "100%", message=F, warning=F}
+#mat <- impute::impute.knn(t(params$rp_combined_data@assays@data$normed))$data
+
+fit <- prcomp(impute::impute.knn(t(mat@assays@data$normed))$data)
+idf <- paste(ref_id, collapse = "|")
+idf <- paste0("(", idf, ")")
+
+temp <- data.frame(pc_1 = fit$x[ ,1], #fit$layout[ ,1],
+           pc_2 = fit$x[ ,2],#fit$layout[ ,2],
+           sample_id = mat$Assay,
+           type = ifelse(grepl(idf, ignore.case = T, mat$Assay), "Ref", "Study_Sample"),
+           Plate.ID = trim_string_bycommon(mat$Plate.ID, split = "_"))
+
+temp %>%
+  ggplot()+
+  geom_point(aes(pc_1, pc_2, color = Plate.ID, shape = type))+
+  geom_line(data = temp%>%
+              filter(sample_id %in% ref_id),
+            aes(pc_1, pc_2, group = sample_id), linetype = 2, alpha = 0.6)+
+  facet_wrap(~type)+
+  theme_bw()+
+  theme(legend.position="bottom", legend.box="vertical", legend.margin=margin())
+```
+
+### Reference Sample QC Plot
+
+**Black dots indicate LOD**       
+
+```{r, echo=F, out.width= "100%", message=F, warning=F, fig.height = 15}
+#ref_sample <- strsplit(params$rp_bridging_str, split = ",")%>%unlist()
+plot_npx_norm_qc(params$rp_combined_data, bridge_pattern = idf)$all
+```
+

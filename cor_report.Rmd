@@ -1,0 +1,125 @@
+---
+title: "Correlation Plots"
+output: html_document
+
+params:
+  rp_upload_data: NA
+  rp_combined_meta: NA
+  rp_choice_b0: NA
+  rp_choice_b1: NA
+  rp_batch_plot_cor: NA
+---
+
+```{r eval = FALSE, echo = FALSE}
+# For PDF output, change the header to have "output: pdf_document".
+#
+# Note that due to an issue in rmarkdown, the default value of a parameter in
+# the header cannot be `NULL`, so I used a default of `NA` for the default value
+# of `n`.
+library(dplyr)
+library(DT)
+library(ggpubr)
+library(patchwork)
+library(ggrepel)
+```
+
+
+## Summary of plate level information.
+
+
+```{r, echo=F, message=F, warning=F}
+#common_sample <- intersect(params$rp_upload_data[[params$rp_choice_b0]]$Assay, params$rp_upload_data[[params$rp_choice_b1]]$Assay)
+common_sample <- intersect(params$rp_combined_meta$sample_id[params$rp_combined_meta$file_name == params$rp_choice_b0], 
+                               params$rp_combined_meta$sample_id[params$rp_combined_meta$file_name == params$rp_choice_b1])
+
+common_analyte <- intersect(rownames(params$rp_upload_data[[params$rp_choice_b0]]), rownames(params$rp_upload_data[[params$rp_choice_b1]]))
+
+data_a <- params$rp_upload_data[[params$rp_choice_b0]][match(common_analyte, rownames(params$rp_upload_data[[params$rp_choice_b0]])),
+                                                       match(common_sample, params$rp_combined_meta$sample_id[params$rp_combined_meta$file_name == params$rp_choice_b0])]
+data_b <- params$rp_upload_data[[params$rp_choice_b1]][match(common_analyte, rownames(params$rp_upload_data[[params$rp_choice_b1]])),
+                                                       match(common_sample, params$rp_combined_meta$sample_id[params$rp_combined_meta$file_name == params$rp_choice_b1])]
+
+```
+
+
+```{r, echo=F, message=F, warning=F}
+DT::datatable(
+      data.frame(software_version = c(data_a@metadata$software_version%>% unlist(), data_b@metadata$software_version%>% unlist()),
+                 filename = c(data_a$file_name[1]%>% unlist(), data_b$file_name[1]%>% unlist()),
+                 panel = c(data_a@metadata$panel%>% unlist(), data_b@metadata$panel%>% unlist()),
+                 total_common_samples = c(ncol(data_a), ncol(data_b)),
+                 total_common_analyte = c(nrow(data_a), nrow(data_b))),
+      rownames = NULL,
+      options = list(scrollX = TRUE))
+
+```
+
+
+### `r paste("Total of", nrow(data_a), "Common analytes :")`
+    
+**`r paste(common_analyte, collapse = ",")`**    
+
+## Correlation of common analytes 
+
+**Dataset A: `r paste(params$rp_choice_b0)`**   
+    
+**Dataset B: `r paste(params$rp_choice_b1)`**    
+
+
+```{r, echo=F, message=F, warning=F, out.width= "100%", results="hide"}
+flag <- ifelse((data_a$QC.Warning == "Pass") & (data_b$QC.Warning == "Pass"), "Pass", "Warning")
+
+data_a <- data_a@assays@data$npx
+data_b <- data_b@assays@data$npx
+
+data_a[is.na(data_a)] = min(data_a, na.rm = T)
+data_b[is.na(data_b)] = min(data_b, na.rm = T)
+
+rownames(data_a) <- rownames(data_b) <- common_analyte
+
+if(is.null(params$rp_batch_plot_cor) | (length(params$rp_batch_plot_cor) == 0)){
+  query <- common_analyte
+}else if(params$rp_batch_plot_pca == ""){
+  query <- common_analyte
+}else{
+  query <- params$rp_batch_plot_cor
+}
+
+plot.ls <- lapply(query, function(x){
+  df <- data.frame(A = data_a[rownames(data_a) == x, ],
+             B = data_b[rownames(data_b) == x, ],
+             Sample = common_sample,
+             Warning = flag)%>%
+    filter(!is.na(A) & (!is.na(B)))
+  
+  fit = lm(B ~ A, data = df)
+  fit <- abs(df$B - predict(fit))
+  df$Sample = ifelse((fit >= quantile(fit, probs = 0.98)), df$Sample, NA)
+  
+  range_min <- min(c(as.numeric(df$A), as.numeric(df$B)), na.rm = T)-0.1
+  range_max <- max(c(as.numeric(df$A), as.numeric(df$B)), na.rm = T)+0.1
+  
+  df%>%
+    ggscatter(x = "A", y = "B", fill = "Warning",
+              size = 1, shape = 21,
+              add = "reg.line", conf.int = F)+
+    lims(x = c(range_min, range_max),
+         y = c(range_min, range_max))+
+    stat_cor(color = "red", size = 2)+
+    geom_text_repel(aes(A, B, label = Sample), 
+                    size = 2)+
+    scale_fill_manual(values = c(NA, "red"))+
+    labs(title = x)+
+    theme_bw(base_size = 8)
+})
+
+per_panel <- 6
+n_panel <- ceiling(length(plot.ls)/per_panel)
+for (i in 1 : n_panel) {
+  print(
+    wrap_plots(plot.ls[(1 + (i-1) * per_panel) : min(length(plot.ls), (per_panel + (i-1) * per_panel))],
+               ncol = 3, nrow = 2, byrow = T, guides = "collect") & theme(legend.position = 'bottom')
+  )
+}
+```
+ 
